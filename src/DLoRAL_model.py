@@ -28,7 +28,7 @@ from src.cross_frame_retrieval.cfr_main import CFR_model
 import torchvision.transforms as vision_transforms
 
 def make_1step_sched(args):
-    noise_scheduler_1step = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+    noise_scheduler_1step = DDPMScheduler.from_pretrained(args.pretrained_model_path, subfolder="scheduler")
     noise_scheduler_1step.set_timesteps(1, device="cuda")
     noise_scheduler_1step.alphas_cumprod = noise_scheduler_1step.alphas_cumprod.cuda()
     return noise_scheduler_1step
@@ -44,8 +44,8 @@ def read_yaml(file_path):
         data = yaml.safe_load(file)
     return data
 
-def initialize_vae(rank, return_lora_module_names=False, pretrained_model_name_or_path=None):
-    vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
+def initialize_vae(rank, return_lora_module_names=False, pretrained_model_path=None):
+    vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
     vae.requires_grad_(False)
     vae.train()
 
@@ -74,8 +74,8 @@ def initialize_vae(rank, return_lora_module_names=False, pretrained_model_name_o
         return vae
 
 
-def initialize_unet(rank_quality, rank_consistency, return_lora_module_names=False, pretrained_model_name_or_path=None):
-    unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+def initialize_unet(rank_quality, rank_consistency, return_lora_module_names=False, pretrained_model_path=None):
+    unet = UNet2DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
     # reformulate the conv_in in unet
     conv_in = nn.Conv2d(8, 320, kernel_size=3, padding=1)
     conv_in.weight.data[:, 0:4, ...] = unet.conv_in.weight.data
@@ -130,8 +130,8 @@ def initialize_unet(rank_quality, rank_consistency, return_lora_module_names=Fal
 
 
 
-def initialize_unet_regularizer(rank, return_lora_module_names=False, pretrained_model_name_or_path=None):
-    unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+def initialize_unet_regularizer(rank, return_lora_module_names=False, pretrained_model_path=None):
+    unet = UNet2DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
     unet.requires_grad_(False)
     unet.train()
 
@@ -263,10 +263,10 @@ class Generator(torch.nn.Module):
         pretrained_name = setattr(args, 'pretrained_name', getattr(args, 'pretrained_name', None))
         pretrained_path = setattr(args, 'pretrained_path', getattr(args, 'pretrained_path', None))
 
-        args.pretrained_model_name_or_path = '/home/notebook/data/group/syj/OSEDiff/OSEDiff/preset_models/stable-diffusion-2-1-base'
+        args.pretrained_model_path = '/home/notebook/data/group/syj/OSEDiff/OSEDiff/preset_models/stable-diffusion-2-1-base'
 
-        self.tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
-        self.text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder").cuda()
+        self.tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model_path, subfolder="tokenizer")
+        self.text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_path, subfolder="text_encoder").cuda()
         self.sched = make_1step_sched(args)
         self.args = args
 
@@ -278,7 +278,7 @@ class Generator(torch.nn.Module):
             self.unet, lora_unet_modules_encoder_quality, lora_unet_modules_decoder_quality, lora_unet_others_quality, \
             lora_unet_modules_encoder_consistency, lora_unet_modules_decoder_consistency, lora_unet_others_consistency, = \
                 initialize_unet(rank_quality=args.lora_rank_unet_quality, rank_consistency=args.lora_rank_unet_consistency,
-                                pretrained_model_name_or_path=args.pretrained_model_name_or_path,
+                                pretrained_model_path=args.pretrained_model_path,
                                 return_lora_module_names=True)
 
             self.lora_rank_unet_quality = args.lora_rank_unet_quality
@@ -292,7 +292,7 @@ class Generator(torch.nn.Module):
             stage1_yaml = find_filepath(args.resume_ckpt.split('/checkpoints')[0], 'hparams.yml')
             stage1_args = read_yaml(stage1_yaml)
             stage1_args = SimpleNamespace(**stage1_args)
-            self.unet = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
+            self.unet = UNet2DConditionModel.from_pretrained(args.pretrained_model_path, subfolder="unet")
             # reformulate the conv_in in unet
             conv_in = nn.Conv2d(8, 320, kernel_size=3, padding=1)
             conv_in.weight.data[:, 0:4, ...] = self.unet.conv_in.weight.data
@@ -305,7 +305,7 @@ class Generator(torch.nn.Module):
             self.load_ckpt_from_state_dict(osediff)
         ######################################################
 
-        self.vae_fix = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
+        self.vae_fix = AutoencoderKL.from_pretrained(args.pretrained_model_path, subfolder="vae")
         self.vae_fix.to('cuda')
 
         # unet.enable_xformers_memory_efficient_attention()

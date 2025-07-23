@@ -1,6 +1,8 @@
 import os
+import shutil
 import argparse
 import time
+import logging
 
 import numpy as np
 from PIL import Image
@@ -36,6 +38,21 @@ center_crop = transforms.CenterCrop(128)
 center_crop_gt = transforms.CenterCrop(512)
 
 
+# init logger
+logger = logging.getLogger('DLoRAL')
+logger.setLevel(logging.INFO)
+timestamp = time.time()
+file_handler = logging.FileHandler(".\\log\\inference.{}.log".format(timestamp))
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("[%(levelname)s][%(asctime)s][%(name)s] %(message)s")
+file_handler.setFormatter(formatter)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+
 def get_validation_prompt(args, image, model, device='cuda'):
     validation_prompt = ""
     lq = tensor_transforms(image).unsqueeze(0).to(device)
@@ -46,7 +63,19 @@ def get_validation_prompt(args, image, model, device='cuda'):
     return validation_prompt
 
 
-def extract_frames(video_path):
+def get_input_files(input_path):
+    result = list()
+    if os.path.isdir(input_path):
+        for file in os.listdir(input_path):
+            full_path = os.path.join(input_path, file)
+            if not os.path.isdir(full_path):
+                result.append(full_path)
+    else:
+        result.append(input_path)
+    return result
+
+
+def extract_frames_cv2(video_path):
     video_capture = cv2.VideoCapture(video_path)
 
     frame_number = 0
@@ -75,23 +104,59 @@ def extract_frames(video_path):
     return frame_images
 
 
-def process_video_directory(input_directory):
-    video_files = glob.glob(os.path.join(input_directory, "*.mp4"))
-    all_video_data = []
+def extract_frames(video_path, ffmpeg_path=None):
+    if (ffmpeg_path == None):
+        return extract_frames_cv2(video_path)
 
-    # Process each video and extract frames
-    for video_file in video_files:
-        print(f"Processing video: {video_file}")
+    video_name = os.path.basename(video_path).split('.')[0]
+    logger.info("Start process video: {}".format(video_name))
+    # call ffmpeg to extract image from video
 
-        # Extract frames and get their names
-        frame_images = extract_frames(video_file)
+    # clean temp dir
+    frame_dir = ".\\cache\\raw_frame_dir"
+    if os.path.exists(frame_dir):
+        shutil.rmtree(frame_dir)
+    os.makedirs(frame_dir)
 
-        # Extract video name (without extension) to create consistent naming
-        video_name = os.path.basename(video_file).split('.')[0]  # Extract the name without .mp4 extension
+    # get fps
+    ffprobe_exe = os.path.join(ffmpeg_path, 'ffprobe')
+    ffprobe_paras = ['-v error -select_streams v:0 -show_entries stream=avg_frame_rate',
+                     '-of default=noprint_wrappers=1:nokey=1']
+    cmd = '{} {} {}'.format(ffprobe_exe, ' '.join(ffprobe_paras), video_path)
+    fps = os.popen(cmd).read().strip()
+    logger.info("Video FPS: {}".format(fps))
 
-        all_video_data.append((video_name, frame_images))
+    ffmpeg_exe = os.path.join(ffmpeg_path, 'ffmpeg')
+    cmd = f'{ffmpeg_exe} -i {video_path} {frame_dir}\\frame_%05d.png'
+    logger.info("Excecute ffmpeg command: {}".format(cmd))
+    result = os.system(cmd)
+    result = 0
+    logger.info(f"result: {result}")
 
-    return all_video_data
+    # read frame names from output folder
+    files = os.listdir(frame_dir)
+    files.sort()
+    files = [ os.path.join(frame_dir, file) for file in files ]
+    logger.info("number of frame: {}".format(len(files)))
+    logger.info("first file: {}".format(files[0]))
+    return (video_name, files, fps)
+
+
+def merge_frames(video_name, image_dir, output_path, fps, ffmpeg_path):
+    if (not ffmpeg_path):
+        logger.error("ffmpeg path is Null!")
+        return
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+
+    ffmpeg_exe = os.path.join(ffmpeg_path, 'ffmpeg')
+    cmd = "{} -r {} -f image2 -i {}\\{} {}".format(ffmpeg_exe, fps,
+                                               image_dir, 'frame_%05d.png',
+                                               os.path.join(output_path, video_name+'.mp4'))
+    logger.info("Execute: {}".format(cmd))
+    os.system(cmd)
+    return
+
 
 def compute_frame_difference_mask(frames):
     ambi_matrix = frames.var(dim=0)
@@ -123,18 +188,18 @@ def pil_center_crop(image, target_size):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_image', '-i', type=str, default=None, help='path to the input image')
+    parser.add_argument('--input_path', '-i', type=str, default=None, help='path to the input image')
     parser.add_argument('--output_dir', '-o', type=str, default=None, help='the directory to save the output')
     parser.add_argument('--pretrained_path', type=str, default=None, help='path to a model state dict to be used')
     parser.add_argument('--seed', type=int, default=42, help='Random seed to be used')
     parser.add_argument("--process_size", type=int, default=512)
     parser.add_argument("--upscale", type=int, default=4)
     parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='adain')
-    parser.add_argument("--pretrained_model_name_or_path", type=str, default='preset_models/stable-diffusion-2-1-base')
     parser.add_argument("--pretrained_model_path", type=str, default='preset_models/stable-diffusion-2-1-base')
     parser.add_argument('--prompt', type=str, default='', help='user prompts')
     parser.add_argument('--ram_path', type=str, default=None)
     parser.add_argument('--ram_ft_path', type=str, default=None)
+    parser.add_argument('--bert_path', type=str, default=None, help='preset bert model path')
     parser.add_argument('--save_prompts', type=bool, default=True)
     # tile setting
     parser.add_argument("--vae_decoder_tiled_size", type=int, default=224)
@@ -149,21 +214,26 @@ if __name__ == "__main__":
     parser.add_argument("--stages", type=int, default=None)
     parser.add_argument("--load_cfr", action="store_true", )
 
+    # extern ffmpeg path
+    parser.add_argument("--ffmpeg_path", type=str, default=None, 
+                        help='extern ffmpeg file path')
+
     args = parser.parse_args()
 
     # initialize the model
     model = Generator_eval(args)
     model.set_eval()
 
-    if os.path.isdir(args.input_image):
-        all_video_data = process_video_directory(args.input_image)
-    else:
+    #if os.path.isdir(args.input_image):
+    #    all_video_data = process_video_directory(args.input_image, args.ffmpeg_path)
+    #else:
         # Handle single video case (if input is a single video file)
-        all_video_data = [(os.path.basename(args.input_image).split('.')[0], extract_frames(args.input_image))]
+    #    all_video_data = [extract_frames(args.input_image, args.ffmpeg_path)]
 
     # get ram model
     DAPE = ram(pretrained=args.ram_path,
                pretrained_condition=args.ram_ft_path,
+               bert_path=args.bert_path,
                image_size=384,
                vit='swin_l')
     DAPE.eval()
@@ -195,20 +265,26 @@ if __name__ == "__main__":
 
     # make the output dir
     os.makedirs(args.output_dir, exist_ok=True)
-    print(f"There are {len(all_video_data)} videos to process.")
+    #print(f"There are {len(all_video_data)} videos to process.")
     frame_num = 2
     frame_overlap = 1
 
-    for video_name, video_frame_images in all_video_data:
-        print(f"Processing frames for video: {video_name}")
+    input_video_list = get_input_files(args.input_path)
+
+    for input_video_path in input_video_list:
+#        input_video_path = f'.\\input\\output_{i:03}.mp4'
+        logger.info(f"Processing video: {input_video_path}")
+
+        logger.info("Extracting frames.")
+        video_name, video_frame_images, fps = extract_frames(input_video_path, args.ffmpeg_path)
 
         # Initialize a flag to check if the prompt already exists
         exist_prompt = 0
 
         # Define the save path for the processed video
-        video_save_path = os.path.join(args.output_dir, video_name)
-        if not os.path.exists(video_save_path):
-            os.makedirs(video_save_path)
+        image_save_path = os.path.join("cache\\sr_frame_dir\\", video_name)
+        if not os.path.exists(image_save_path):
+            os.makedirs(image_save_path)
 
         # Initialize batches for storing input images and their grayscale versions
         input_image_batch = []
@@ -343,13 +419,22 @@ if __name__ == "__main__":
                 output_pil = output_pil.resize((new_w, new_h), Image.BICUBIC)
 
             global_frame_counter = src_idx
-            out_name = f"frame_{global_frame_counter:04d}.png"
-            out_path = f"{video_save_path}/{out_name}"
+            out_name = f"frame_{global_frame_counter:05d}.png"
+            out_path = f"{image_save_path}/{out_name}"
 
 
             output_pil.save(out_path)
-            print(f"Saving frame {global_frame_counter} to {out_path}")
+            logger.info(f"Saving frame {global_frame_counter} to {out_path}")
 
             gc.collect()
             torch.cuda.empty_cache()
+
+            # use file as pause signal
+            while(os.path.exists("./pause")):
+                time.sleep(1)
+
+        logger.info("Merging frames.")
+        merge_frames(video_name, image_save_path, args.output_dir, fps, args.ffmpeg_path)
+        # clean cache, prevent disk full
+        shutil.rmtree(image_save_path)
 

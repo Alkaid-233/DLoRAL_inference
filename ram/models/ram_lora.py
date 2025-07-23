@@ -20,6 +20,7 @@ warnings.filterwarnings("ignore")
 
 class RAMLora(nn.Module):
     def __init__(self,
+                 bert_path='',
                  condition_config=f'{CONFIG_PATH}/configs/condition_config.json',
                  med_config=f'{CONFIG_PATH}/configs/med_config.json',
                  image_size=384,
@@ -106,7 +107,7 @@ class RAMLora(nn.Module):
                 vit, image_size, vit_grad_ckpt, vit_ckpt_layer)
 
         # create tokenzier
-        self.tokenizer = init_tokenizer()
+        self.tokenizer = init_tokenizer(bert_path)
 
         # Tag2Text employ encoder-decoder architecture for image-tag-text generation: image-tag interaction encoder and image-tag-text decoder
         # create image-tag interaction encoder
@@ -325,8 +326,8 @@ class RAMLora(nn.Module):
 
 
 # load RAM pretrained model parameters
-def ram(pretrained='', pretrained_condition='', **kwargs):
-    model = RAMLora(**kwargs)
+def ram(pretrained='', pretrained_condition='', bert_path='', **kwargs):
+    model = RAMLora(bert_path, **kwargs)
 
     if pretrained:
         if kwargs['vit'] == 'swin_b':
